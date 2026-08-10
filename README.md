@@ -1,124 +1,102 @@
-# linear-plane-importer
+# linear_to_plane
 
-Importador sencillo de CSV de Linear a Plane (versión gratuita / Open Source).
+Importa un export CSV de Linear a Plane (self-hosted o cloud) vía REST API.
 
-Este repositorio contiene un script en Python para migrar datos exportados desde Linear (CSV) hacia Plane usando la API. Lo único necesario es exportar tu CSV desde Linear, crear una API key en Plane y colocar las credenciales en un archivo `.env`.
+Mapea proyectos, estados, prioridades, labels, assignees y la jerarquía de
+issues (parent/child), y deja un vínculo `external_id`/`external_source` para
+que re-ejecutar el script sea **idempotente**: los issues ya importados se
+omiten, no se duplican.
 
----
+## Qué necesitas
 
-## Resumen rápido
+**1. En Linear — exportar el CSV**
 
-1. Exporta un CSV desde Linear.
-2. Crea una API key en Plane.
-3. Guarda la API key (y opcionalmente la URL de tu instancia) en `.env`.
-4. Ejecuta el script para importar los ítems.
+`Settings > Administration > Import/Export > Export` y descarga el CSV.
 
----
+El CSV debe tener (al menos) estas columnas:
+`ID, Project, Title, Status, Priority, UUID`.
+También se aprovechan si existen: `Description, Assignee, Labels, Started,
+Completed, Canceled, Due Date, Parent issue, Related to, Blocked by, Estimate`.
 
-## Requisitos
+**2. En Plane — crear un token**
 
-- Python 3.8+.
-- Paquetes: requests, python-dotenv (u otros que use el script). Si hay `requirements.txt`, instálalos con `pip install -r requirements.txt`.
-- Acceso a tu instancia de Plane y una API key con permisos para crear ítems/proyectos.
+Saca un API key / Personal Access Token en Plane (en el avatar,
+`Settings > API tokens`). El workspace slug es el que aparece en la URL de tu
+instancia (`https://plane.example.com/WS_SLUG/...`).
 
----
+**3. Configurar `.env`**
 
-## Exportar CSV desde Linear
+Copia el contenido de `.env.example` a un archivo `.env` en la raíz del repo y
+rellena los valores:
 
-1. Entra a tu workspace en Linear.
-2. Ve a Settings → Data export (o Export).
-3. Exporta los datos en formato CSV (por ejemplo `issues.csv` o `linear_export.csv`).
-4. Descarga el archivo y colócalo en la raíz del proyecto o pásale su ruta al script.
-
----
-
-## Crear API Key en Plane
-
-1. Accede a tu instancia de Plane (cloud o self-hosted).
-2. Ve a Settings → API Keys (o similar).
-3. Genera una nueva API key con permisos para crear issues/boards/items.
-4. Copia la API key.
-
----
-
-## Configuración (.env)
-
-Crea un archivo `.env` en la raíz del proyecto con al menos estas variables:
-
-```
-# .env
-PLANE_API_KEY=tu_api_key_aqui
-# Si usas una instancia self-hosted o URL personalizada:
-# PLANE_BASE_URL=https://plane.example.com/api
-# Ruta al CSV (opcional si lo pasas por argumento al script):
-CSV_PATH=linear_export.csv
-# Opcional: id del proyecto/board en Plane si tu script lo requiere:
-# PLANE_PROJECT_ID=...
+```env
+PLANE_BASE_URL=plane.local.domain
+PLANE_WORKSPACE=targetplaneworkspace
+PLANE_API_KEY=plane_api_key
+PLANE_VERIFY_SSL=false
+PLANE_REQUESTS_PER_MINUTE=50
 ```
 
-- NO subas tu `.env` al repositorio (añádelo a `.gitignore`).
-
----
+| Variable | Obligatoria | Descripción |
+| --- | --- | --- |
+| `PLANE_BASE_URL` | sí | URL de la instancia, p.ej. `https://plane.example.com` (con o sin `/api/v1`). |
+| `PLANE_WORKSPACE` | sí | Slug del workspace desde la URL de Plane. |
+| `PLANE_API_KEY` | sí | Personal Access Token / API key. |
+| `PLANE_VERIFY_SSL` | no | `false`/`0`/`no`/`off` desactiva la verificación TLS (útil con HTTPS auto-firmado). Por defecto `true`. |
+| `PLANE_REQUESTS_PER_MINUTE` | no | Throttle cliente de la API (por defecto `50`). |
 
 ## Instalación
 
-Si existe `requirements.txt`:
+Solo requiere Python 3 y `python-dotenv` (más `requests`):
 
 ```bash
-python -m pip install -r requirements.txt
+pip install python-dotenv requests
 ```
-
-Si no, instala al menos las dependencias que el script utilice, por ejemplo:
-
-```bash
-python -m pip install requests python-dotenv
-```
-
----
 
 ## Uso
 
-Ejemplo de ejecución (ajusta el nombre del script si difiere):
+Seguro por defecto: **sin `--apply` solo inspecciona Plane y muestra el plan**
+sin modificar nada.
 
 ```bash
-# Copia el ejemplo y edita .env
-cp .env.example .env
-# Edita .env y añade tu PLANE_API_KEY y CSV_PATH
+# Inspecciona el CSV y el estado de Plane (no modifica nada)
+python3 linear_to_plane.py linear-export.csv
 
-# Ejecuta el script de migración
-python migrate_linear_to_plane.py --csv linear_export.csv
+# Crea/actualiza proyectos, estados, labels y work items
+python3 linear_to_plane.py linear-export.csv --apply
+
+# Además crea los proyectos de Linear que no existen en Plane
+python3 linear_to_plane.py linear-export.csv --apply --create-projects
+
+# Solo analizar el CSV (sin credenciales de Plane)
+python3 linear_to_plane.py linear-export.csv --analyze-only
+
+# Limitar la importación a proyectos concretos (repetible)
+python3 linear_to_plane.py linear-export.csv --apply --only-project "Mobile" --only-project "Web"
 ```
 
-El script leerá el CSV y creará los ítems en Plane siguiendo la lógica implementada (título, descripción, etiquetas, estado, etc.).
+## Qué hace
 
----
+- **Proyectos**: busca por nombre (normalizado). Con `--create-projects` crea
+  los que falten, con un nombre "Plane-safe" y un identificador corto único.
+- **Estados**: crea los estados que falten por proyecto y los agrupa
+  (`backlog`, `todo`, `in progress`, `in review`, `done`, `canceled`).
+- **Labels**: crea las labels que falten por proyecto con color asignado.
+- **Assignees**: asigna el miembro del workspace que coincida por email.
+- **Prioridades**: mapea `urgent/high/medium/low/none`.
+- **Fechas**: `Started` → `start_date`, `Due Date` → `target_date`.
+- **Jerarquía**: aplica `Parent issue` en una segunda pasada (cuando padre e
+  hijo están en el mismo proyecto).
+- **Trazabilidad**: el cuerpo del issue incluye el historial de metadatos de
+  Linear (IDs, fechas, relaciones, estimate).
+- **Re-ejecución segura**: los issues con `external_source=linear` ya existentes
+  se saltan; no se duplican.
+- **Rate limiting**: respeta `429`/`Retry-After` del servidor y espacia las
+  llamadas según `PLANE_REQUESTS_PER_MINUTE`. Detecta si tu instancia usa
+  `/work-items/` (nuevo) o `/issues/` (versiones self-hosted antiguas).
 
-## Notas y recomendaciones
+## Notas
 
-- Haz primero una prueba con un CSV pequeño para verificar el comportamiento.
-- Revisa el mapeo de campos: el CSV de Linear puede tener columnas distintas según la versión y configuración. Ajusta el script si es necesario.
-- Manejo de límites (rate limits): si migras muchos registros, confirma que el script respete los límites de la API (retries, backoff).
-- Logs: revisa la salida del script para verificar errores.
-
----
-
-## Contribuir
-
-Si quieres mejorar este script, sugerencias útiles:
-
-- Añadir un `.env.example` con variables mínimas.
-- Permitir mapeos configurables entre columnas del CSV y campos de Plane.
-- Añadir soporte para reintentos y manejo de rate limits.
-- Documentar ejemplos de CSV y tests.
-
-Si vas a enviar un PR, abre uno con cambios pequeños y claros; comentaré o reviso rápido.
-
----
-
-## Licencia
-
-Añade la licencia que prefieras (por ejemplo MIT). Si no añades licencia, el proyecto no tendrá una licencia explícita.
-
----
-
-Si quieres, puedo añadir también un archivo `.env.example` y/o un `README.md` en inglés o una descripción corta para la página del repo.
+- El script sale con código distinto de 0 si faltan credenciales, faltan
+  proyectos y no se usa `--create-projects`, etc.
+- La primera ejecución recomendada es sin `--apply` para revisar el plan.
